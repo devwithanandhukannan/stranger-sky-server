@@ -1,4 +1,11 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 const list = (s) => (s || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
 const origins = (s) => (s || '').split(',').map((x) => x.trim().replace(/\/$/, '')).filter(Boolean);

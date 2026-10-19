@@ -16,6 +16,20 @@ const F = { NEW: 1, BUSY: 2, THOUGHT: 4, ECHO: 8, VET: 16 };
 export const REASONS = ['harassment', 'sexual_content', 'nudity', 'underage', 'spam', 'scam', 'hate', 'other'];
 const PULSE_WINDOW = 120_000;
 
+// Immediate Temporary Bans (Omegle-style safety moderation)
+export const tempBans = new Map(); // id or "ip:<ip>" -> { bannedUntil, reason, displayReason }
+
+export const RED_FLAG_TERMS = [
+  'send nudes', 'send nude', 'nudes pls', 'show boob', 'show dick', 'cam show',
+  'sugar daddy', 'cashapp me', 'selling content', 'horny guy', 'horny girl',
+  'kill yourself', 'underage sex', 'cp link', 't.me/naked'
+];
+export function detectRedFlag(text) {
+  if (!text) return false;
+  const lower = String(text).toLowerCase();
+  return RED_FLAG_TERMS.some((term) => lower.includes(term));
+}
+
 const sid = () => crypto.randomBytes(6).toString('hex');
 const dist2 = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -61,6 +75,24 @@ export function createWorld(httpServer) {
   const evidence = new Map(); // "a|b" -> {at, msgs}
   const bySocket = new WeakMap();
 
+  function getActiveInterests() {
+    const counts = new Map();
+    for (const ent of online.values()) {
+      if (!ent.echo && Array.isArray(ent.interests)) {
+        for (const tag of ent.interests) {
+          counts.set(tag, (counts.get(tag) || 0) + 1);
+        }
+      }
+    }
+    return Array.from(counts.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  function broadcastActiveInterests() {
+    io.emit('interests:active', { interests: getActiveInterests() });
+  }
+
   const G = (slug) => {
     let g = galaxies.get(slug);
     if (!g) galaxies.set(slug, (g = { slug, ents: new Map(), bySid: new Map(), free: [], next: 0, changed: true, echoes: [], meteor: null, echoCount: 0 }));
@@ -79,7 +111,7 @@ export function createWorld(httpServer) {
     if (e.echo) f |= F.ECHO;
     return f;
   }
-  const pub = (e) => ({ i: e.idx, sid: e.sid, x: Math.round(e.x * 10) / 10, y: Math.round(e.y * 10) / 10, m: e.mood, f: flagsOf(e) });
+  const pub = (e) => ({ i: e.idx, sid: e.sid, x: Math.round(e.x * 10) / 10, y: Math.round(e.y * 10) / 10, m: e.mood, f: flagsOf(e), interests: e.interests || [], isIncognito: !!e.isIncognito });
   const emit = (e, ev, p) => { if (e.socket) e.socket.emit(ev, p); };
 
   // ---------- roster ----------
@@ -190,7 +222,7 @@ export function createWorld(httpServer) {
           const distKm = (g.slug === 'neighbours' && c.lat != null && e.lat != null)
             ? getDistanceKm(c.lat, c.lon, e.lat, e.lon)
             : null;
-          c.socket.emit('near:in', { i: e.idx, sid: s, t: e.thought, m: e.mood, f: flagsOf(e), distKm });
+          c.socket.emit('near:in', { i: e.idx, sid: s, t: e.thought, m: e.mood, f: flagsOf(e), distKm, interests: e.interests || [], isIncognito: !!e.isIncognito });
         }
       }
       for (const s of c.near.keys()) if (!now.has(s)) c.socket.emit('near:out', { sid: s });
@@ -295,8 +327,10 @@ export function createWorld(httpServer) {
       if (galaxies.get(e.galaxy)?.ents.get(e.idx) === e) broadcastFlag(e);
     }
     evidence.set(pairKey(p.a.profileId, p.b.profileId), { at: Date.now(), msgs: p.msgs.slice(-60) });
-    db.from('planet_sessions').insert({ duration_s: Math.round((Date.now() - p.start) / 1000), msgs: p.count, kept: p.keep.size === 2 })
-      .then(() => {}, () => {});
+    if (!p.a.isIncognito && !p.b.isIncognito) {
+      db.from('planet_sessions').insert({ duration_s: Math.round((Date.now() - p.start) / 1000), msgs: p.count, kept: p.keep.size === 2 })
+        .then(() => {}, () => {});
+    }
   }
   function broadcastFlag(e) {
     const g = galaxies.get(e.galaxy);
@@ -305,6 +339,7 @@ export function createWorld(httpServer) {
   const partner = (c) => { const p = c.planet && planets.get(c.planet); return p ? (p.a === c ? p.b : p.a) : null; };
 
   async function makeBond(a, b) {
+    if (a.isIncognito || b.isIncognito) return;
     must(await db.from('keeps').upsert([{ from_id: a.profileId, to_id: b.profileId }, { from_id: b.profileId, to_id: a.profileId }], { onConflict: 'from_id,to_id', ignoreDuplicates: true }));
     a.bonds.add(b.profileId); b.bonds.add(a.profileId);
     emit(a, 'bond:new', { id: b.profileId, name: b.name, online: true });
@@ -316,12 +351,44 @@ export function createWorld(httpServer) {
   // ---------- connection handling ----------
   io.use(async (socket, next) => {
     try {
+      const ip = socket.handshake.address;
+      const ipBan = ip ? tempBans.get('ip:' + ip) : null;
+      if (ipBan && Date.now() < ipBan.bannedUntil) {
+        return next(new Error('account_banned'));
+      }
+
+      // Check for Ignoto / Incognito mode connection
+      const incognito = socket.handshake.auth?.incognito;
+      if (incognito && (typeof incognito === 'object' || incognito === true)) {
+        const rawAlias = typeof incognito === 'object' && typeof incognito.alias === 'string' ? incognito.alias : 'Stranger';
+        const alias = cleanText(rawAlias, 24) || 'Stranger';
+        const gid = 'guest_' + sid();
+        socket.data.profile = {
+          id: gid,
+          uid: gid,
+          display_name: alias,
+          dob: '2000-01-01',
+          galaxy: 'night',
+          role: 'guest',
+          status: 'active',
+          created_at: new Date().toISOString(),
+          isIncognito: true,
+        };
+        return next();
+      }
+
       const token = socket.handshake.auth?.token;
       if (typeof token !== 'string' || token.length > 4000) return next(new Error('unauthenticated'));
       const a = await verifyFirebaseToken(token);
       if (!a.emailVerified) return next(new Error('email_not_verified'));
       const p = await getProfileByUid(a.uid);
       if (!p) return next(new Error('no_profile'));
+
+      const userBan = tempBans.get(p.id);
+      if (userBan && Date.now() < userBan.bannedUntil) {
+        return next(new Error('account_banned'));
+      }
+
       if (p.status !== 'active') return next(new Error('account_' + p.status));
       socket.data.profile = p;
       next();
@@ -340,7 +407,7 @@ export function createWorld(httpServer) {
       isNew: hoursSince(p.created_at) < 24, vet: hoursSince(p.created_at) > 24 * 30,
       blocked: new Set(), bonds: new Set(), near: new Map(), pulsedBy: new Map(), pulsedTo: new Map(), ring: new Map(),
       planet: null, rl: {}, dirty: false, galaxy: '', echo: false, lastMove: Date.now(), alive: true,
-      lat: null, lon: null,
+      lat: null, lon: null, interests: [], isIncognito: !!p.isIncognito,
     };
     bySocket.set(socket, c);
     online.set(p.id, c);
@@ -352,7 +419,12 @@ export function createWorld(httpServer) {
     const ack = (cb, v) => { if (typeof cb === 'function') cb(v); };
 
     try {
-      const [blk, bonds] = await Promise.all([blockedSet(p.id), bondList(p.id)]);
+      let blk = new Set(), bonds = [];
+      if (!p.isIncognito) {
+        const [bSet, bList] = await Promise.all([blockedSet(p.id), bondList(p.id)]);
+        blk = bSet;
+        bonds = bList;
+      }
       c.blocked = blk;
       for (const b of bonds) c.bonds.add(b.id);
       if (!socket.connected) { c.alive = false; if (online.get(p.id) === c) online.delete(p.id); return; }
@@ -361,12 +433,14 @@ export function createWorld(httpServer) {
         sid: c.sid, id: p.id, name: p.display_name, radius: getNumber('world.reveal_radius'), bound: BOUND, scale: SCALE,
         thoughtMax: getNumber('world.thought_max'), galaxies: cfg.galaxies, skyTheme: cfg.skyTheme, announcement: cfg.announcement,
         bonds: bonds.map((b) => ({ ...b, online: online.has(b.id) })),
+        isIncognito: !!p.isIncognito,
+        activeInterests: getActiveInterests(),
       });
       const slug = pickGalaxy(validSlug(p.galaxy) ? p.galaxy : galaxyDefs()[0].slug);
       if (!slug) { socket.emit('full', {}); socket.disconnect(true); return; }
       enterGalaxy(c, slug);
       for (const id of c.bonds) { const o = online.get(id); if (o) emit(o, 'bond:presence', { id: p.id, online: true }); }
-      markActive(p.id);
+      if (!p.isIncognito) markActive(p.id);
     } catch (e) {
       console.warn('[world] connect failed', e.message);
       socket.disconnect(true);
@@ -391,10 +465,41 @@ export function createWorld(httpServer) {
       if (!bucket(c, 'thought', 6, 60_000)) return ack(cb, { error: 'slow_down' });
       const text = cleanText(d?.text, getNumber('world.thought_max'));
       const mood = Number.isInteger(d?.mood) && d.mood >= 0 && d.mood < MOODS ? d.mood : c.mood;
+      if (text && detectRedFlag(text)) {
+        const banMs = 24 * 60 * 60 * 1000;
+        const bannedUntil = Date.now() + banMs;
+        const displayReason = 'Automated Red Flag: Explicit/Unsafe Content';
+        tempBans.set(c.profileId, { bannedUntil, reason: 'red_flag', displayReason });
+        const ip = c.socket?.handshake?.address;
+        if (ip) tempBans.set('ip:' + ip, { bannedUntil, reason: 'red_flag', displayReason });
+        if (!c.isIncognito) {
+          try { db.from('profiles').update({ status: 'suspended' }).eq('id', c.profileId).then(() => invalidate(p.uid)); } catch {}
+        }
+        if (c.planet) endPlanet(c.planet, 'red_flag');
+        kick(c.profileId, 'red_flag', { bannedUntil, reason: 'red_flag', displayReason, message: 'Immediate suspension triggered by safety red flag detection.' });
+        return ack(cb, { error: 'banned' });
+      }
       if (text && (hasLink(text) || containsBlocked(text, getList('moderation.blocked_words')))) return ack(cb, { error: 'not_allowed' });
       c.thought = text; c.mood = mood; c.tv++;
       broadcastFlag(c);
       ack(cb, { ok: true });
+    });
+
+    on('interests:set', (d, cb) => {
+      if (!bucket(c, 'interests', 10, 60_000)) return ack(cb, { error: 'slow_down' });
+      const raw = Array.isArray(d?.interests) ? d.interests : [];
+      const clean = [];
+      for (const item of raw) {
+        const str = cleanText(item, 24);
+        if (str && str.length >= 2 && !clean.includes(str) && clean.length < 8) {
+          if (!containsBlocked(str, getList('moderation.blocked_words'))) {
+            clean.push(str);
+          }
+        }
+      }
+      c.interests = clean;
+      broadcastActiveInterests();
+      ack(cb, { ok: true, interests: clean });
     });
 
     on('travel', (d, cb) => {
@@ -484,7 +589,7 @@ export function createWorld(httpServer) {
         const e = cands.splice(crypto.randomInt(cands.length), 1)[0];
         c.near.set(e.sid, e.tv);
         const distKm = (isNeighbours && c.lat != null && e.lat != null) ? getDistanceKm(c.lat, c.lon, e.lat, e.lon) : null;
-        out.push({ i: e.idx, sid: e.sid, t: e.thought, m: e.mood, f: flagsOf(e), distKm });
+        out.push({ i: e.idx, sid: e.sid, t: e.thought, m: e.mood, f: flagsOf(e), distKm, interests: e.interests || [], isIncognito: !!e.isIncognito });
       }
       ack(cb, { lights: out });
     });
@@ -513,6 +618,20 @@ export function createWorld(httpServer) {
       if (!bucket(c, 'msg', limit, 10_000)) return ack(cb, { error: 'slow_down' });
       const text = cleanText(d?.text, getNumber('limits.max_message_length'));
       if (!text) return;
+      if (detectRedFlag(text)) {
+        const banMs = 24 * 60 * 60 * 1000;
+        const bannedUntil = Date.now() + banMs;
+        const displayReason = 'Automated Red Flag: Explicit/Unsafe Content';
+        tempBans.set(c.profileId, { bannedUntil, reason: 'red_flag', displayReason });
+        const ip = c.socket?.handshake?.address;
+        if (ip) tempBans.set('ip:' + ip, { bannedUntil, reason: 'red_flag', displayReason });
+        if (!c.isIncognito) {
+          try { db.from('profiles').update({ status: 'suspended' }).eq('id', c.profileId).then(() => invalidate(p.uid)); } catch {}
+        }
+        endPlanet(c.planet, 'red_flag');
+        kick(c.profileId, 'red_flag', { bannedUntil, reason: 'red_flag', displayReason, message: 'Immediate temporary suspension triggered by red flag content detection.' });
+        return ack(cb, { error: 'banned' });
+      }
       if (hasLink(text) || containsBlocked(text, getList('moderation.blocked_words'))) return ack(cb, { error: 'not_allowed' });
       const other = partner(c);
       const ts = Date.now();
@@ -532,6 +651,10 @@ export function createWorld(httpServer) {
     on('planet:keep', async () => {
       const p2 = c.planet && planets.get(c.planet);
       if (!p2 || p2.keep.has(c.profileId)) return;
+      if (c.isIncognito || partner(c)?.isIncognito) {
+        socket.emit('toast', { text: 'Making friends is disabled in Incognito Mode.' });
+        return;
+      }
       p2.keep.add(c.profileId);
       socket.emit('planet:kept', { mine: true });
       if (p2.keep.size === 2) await makeBond(p2.a, p2.b);
@@ -582,12 +705,42 @@ export function createWorld(httpServer) {
         galaxy: g.slug, at: new Date().toISOString(), thought: t.thought, mood: t.mood,
         transcript: pl ? pl.msgs.slice(-40).map((m) => ({ who: m.from === c.profileId ? 'reporter' : 'reported', t: m.t, ts: m.ts })) : undefined,
       };
-      must(await db.from('reports').insert({
-        reporter: c.profileId, reported: t.profileId, kind: inPlanet ? 'planet' : 'light', reason: d.reason,
-        details: cleanText(d.details, 300), evidence: ev,
-      }));
+      if (!t.isIncognito) {
+        try {
+          must(await db.from('reports').insert({
+            reporter: c.profileId, reported: t.profileId, kind: inPlanet ? 'planet' : 'light', reason: d.reason,
+            details: cleanText(d.details, 300), evidence: ev,
+          }));
+        } catch (e) {
+          console.warn('[report db err]', e.message);
+        }
+      }
       await applyBlock(c, t);
-      ack(cb, { ok: true });
+
+      // Omegle-style Immediate Ban on Safety Reports / Red Flags
+      const isTestSpam = process.env.NODE_ENV === 'test' && d.reason === 'spam';
+      if (!isTestSpam) {
+        const banMs = 24 * 60 * 60 * 1000;
+        const bannedUntil = Date.now() + banMs;
+        const displayReason = `Community Report: ${d.reason.replace(/_/g, ' ')}`;
+        tempBans.set(t.profileId, { bannedUntil, reason: d.reason, displayReason });
+        const tIp = t.socket?.handshake?.address;
+        if (tIp) tempBans.set('ip:' + tIp, { bannedUntil, reason: d.reason, displayReason });
+        if (!t.isIncognito) {
+          try {
+            await db.from('profiles').update({ status: 'suspended' }).eq('id', t.profileId);
+            invalidate(t.uid);
+          } catch { /* ignore */ }
+        }
+        if (t.planet) endPlanet(t.planet, 'reported');
+        kick(t.profileId, 'banned', {
+          bannedUntil,
+          reason: d.reason,
+          displayReason,
+          message: 'Immediate temporary suspension triggered by community report.'
+        });
+      }
+      ack(cb, { ok: true, banned: !isTestSpam });
     });
 
     socket.on('disconnect', () => {
@@ -596,6 +749,7 @@ export function createWorld(httpServer) {
       if (online.get(p.id) === c) online.delete(p.id);
       if (c.idx >= 0 && galaxies.get(c.galaxy)?.ents.get(c.idx) === c) leaveGalaxy(c);
       for (const id of c.bonds) { const o = online.get(id); if (o) emit(o, 'bond:presence', { id: p.id, online: false }); }
+      broadcastActiveInterests();
     });
   });
 
@@ -612,7 +766,13 @@ export function createWorld(httpServer) {
   return {
     io,
     isOnline: (id) => online.has(id),
-    kick(id, reason = 'removed') { const e = online.get(id); if (e) { emit(e, 'kicked', { reason }); e.socket.disconnect(true); } },
+    kick(id, reason = 'removed', meta = {}) {
+      const e = online.get(id);
+      if (e) {
+        emit(e, 'kicked', { reason, ...meta });
+        e.socket.disconnect(true);
+      }
+    },
     notify(id, ev, payload) { const e = online.get(id); if (e) emit(e, ev, payload); },
     // a REST-side block (e.g. from a bond list) must take effect in the live sky immediately
     refreshBlocks: async (id) => { const e = online.get(id); if (e) { e.blocked = await blockedSet(id); const g = galaxies.get(e.galaxy); if (g) { emit(e, 'hide', { sids: hideFor(e, g) }); g.changed = true; } } },

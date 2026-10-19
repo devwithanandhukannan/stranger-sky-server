@@ -102,8 +102,9 @@ export function galaxyDefs() {
   const base = gCache.val.length ? gCache.val : parseGalaxies(GALAXIES);
   const bySlug = new Map();
   if (!base.some((g) => g.slug === 'neighbours')) {
-    bySlug.set('neighbours', { slug: 'neighbours', name: 'Neighbours (Near Me)', color: '#38ef7d' });
+    bySlug.set('neighbours', { slug: 'neighbours', name: 'Neighbours (Near Me)', color: '#0071e3' });
   }
+
   for (const g of base) bySlug.set(g.slug, g);
   for (const g of dynamicGalaxies) if (!bySlug.has(g.slug)) bySlug.set(g.slug, g);
   return Array.from(bySlug.values());
