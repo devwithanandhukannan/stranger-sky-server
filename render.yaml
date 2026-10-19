@@ -1,0 +1,18 @@
+# Render blueprint for the API + live sky server (one instance: sky state lives in memory).
+services:
+  - type: web
+    name: lumen-api
+    runtime: node
+    plan: free            # free plan sleeps after 15 min idle; use a paid plan (or an uptime pinger on /healthz) for a live sky
+    rootDir: .
+    buildCommand: npm install --omit=dev
+    startCommand: node index.js
+    healthCheckPath: /healthz
+    envVars:
+      - { key: NODE_ENV, value: production }
+      - { key: SUPABASE_URL, sync: false }
+      - { key: SUPABASE_SECRET_KEY, sync: false }
+      - { key: SETTINGS_ENCRYPTION_KEY, generateValue: true }
+      - { key: ADMIN_EMAILS, sync: false }
+      - { key: WEB_ORIGIN, sync: false }
+      - { key: ADMIN_ORIGIN, sync: false }
