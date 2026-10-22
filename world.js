@@ -171,11 +171,6 @@ export function createWorld(httpServer) {
   }
   function leaveGalaxy(c) {
     if (c.planet) endPlanet(c.planet, 'left');
-    if (c.thought && galaxies.has(c.galaxy)) {
-      const g = galaxies.get(c.galaxy);
-      g.echoes.push({ x: c.x, y: c.y, t: c.thought, m: c.mood, at: Date.now() });
-      if (g.echoes.length > 40) g.echoes.shift();
-    }
     c.socket.leave(room(c.galaxy));
     removeEntity(c);
   }
@@ -230,34 +225,10 @@ export function createWorld(httpServer) {
     }
   }
 
-  // ---------- echoes: faint traces of earlier visitors + seed thoughts, so the sky never feels empty ----------
-  function tendEchoes(g, snapshot) {
-    const real = realCount(g);
-    const want = real === 0 ? 0 : real < 40 ? 14 : real < 150 ? 8 : 4;
-    const ttl = getNumber('world.echo_hours') * 3_600_000;
-    g.echoes = g.echoes.filter((e) => Date.now() - e.at < ttl);
-    let have = 0;
-    for (const e of g.ents.values()) if (e.echo) have++;
-    if (snapshot) {
-      while (have < want) {
-        const past = g.echoes.length ? g.echoes.splice(crypto.randomInt(g.echoes.length), 1)[0] : null;
-        const seeds = getPipeList('world.seed_thoughts');
-        const e = {
-          echo: true, sid: 'e' + sid(), profileId: null, blocked: new Set(), near: new Map(), tv: 1,
-          x: past?.x ?? rand(-BOUND * 0.8, BOUND * 0.8), y: past?.y ?? rand(-BOUND * 0.8, BOUND * 0.8),
-          mood: past?.m ?? crypto.randomInt(MOODS), thought: past?.t ?? pick(seeds) ?? '', isNew: false, vet: false, planet: null,
-        };
-        addEntity(g, e);
-        io.to(room(g.slug)).emit('roster:add', pub(e));
-        have++;
-      }
-      for (const e of g.ents.values()) {
-        if (!e.echo) continue;
-        if (have > want) { removeEntity(e); have--; continue; }
-        e.x = clamp(e.x + rand(-25, 25), -BOUND, BOUND);
-        e.y = clamp(e.y + rand(-25, 25), -BOUND, BOUND);
-        g.changed = true;
-      }
+  // Only real user stars in the sky: remove any echo/bot entities
+  function tendEchoes(g) {
+    for (const e of g.ents.values()) {
+      if (e.echo) removeEntity(e);
     }
   }
 
