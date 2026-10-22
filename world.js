@@ -16,7 +16,7 @@ const F = { NEW: 1, BUSY: 2, THOUGHT: 4, ECHO: 8, VET: 16 };
 export const REASONS = ['harassment', 'sexual_content', 'nudity', 'underage', 'spam', 'scam', 'hate', 'other'];
 const PULSE_WINDOW = 120_000;
 
-// Immediate Temporary Bans (Omegle-style safety moderation)
+// Immediate Temporary Bans (Zero-tolerance safety moderation)
 export const tempBans = new Map(); // id or "ip:<ip>" -> { bannedUntil, reason, displayReason }
 
 export const RED_FLAG_TERMS = [
@@ -762,7 +762,7 @@ export function createWorld(httpServer) {
       }
       await applyBlock(c, t);
 
-      // Omegle-style Immediate Ban on Safety Reports / Red Flags
+      // Zero-Tolerance Immediate Suspension on Safety Reports / Red Flags
       const isTestSpam = process.env.NODE_ENV === 'test' && d.reason === 'spam';
       if (!isTestSpam) {
         const banMs = 24 * 60 * 60 * 1000;

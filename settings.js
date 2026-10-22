@@ -14,7 +14,7 @@ const parseGalaxies = (raw) =>
 // Every editable setting. `public` values are sent to browsers. `secret` values are AES-256-GCM
 // encrypted in the database and never returned. Leave values empty and fill them in later.
 export const SPEC = [
-  { key: 'app.name', label: 'App name', group: 'General', public: true, def: 'Lumen' },
+  { key: 'app.name', label: 'App name', group: 'General', public: true, def: 'Stranger Sky' },
   { key: 'app.min_age', label: 'Minimum age', group: 'General', public: true, def: '18', type: 'number' },
   { key: 'app.registration_open', label: 'Registration open (true/false)', group: 'General', def: 'true' },
   { key: 'app.announcement', label: 'Announcement shown in the sky (empty = none)', group: 'General', public: true, def: '' },
