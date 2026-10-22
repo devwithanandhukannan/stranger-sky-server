@@ -154,9 +154,13 @@ export function buildLanterns(rt) {
     const mine = must(await db.from('keeps').select('to_id').eq('from_id', me));
     const kept = (o) => !!o && mine.some((k) => k.to_id === o);
     const thread = (lid) => replies.filter((x) => x.lantern_id === lid).map((x) => ({ mine: x.from_id === me, body: x.body, at: x.created_at }));
+    const sent24h = s.filter((l) => new Date(l.created_at).getTime() >= Date.now() - 24 * 3_600_000);
+    const cap = getNumber('limits.lanterns_per_day');
+    const left = Math.max(0, cap - sent24h.length);
     res.json({
-      sent: s.map((l) => ({ id: l.id, body: l.body, status: l.status, hops: l.hops, caught: !!l.holder, thread: thread(l.id), kept: kept(l.holder) })),
-      held: h.map((l) => ({ id: l.id, body: l.body, status: l.status, hops: l.hops, thread: thread(l.id), kept: kept(l.author) })),
+      left,
+      sent: s.map((l) => ({ id: l.id, body: l.body, status: l.status, hops: l.hops, caught: !!l.holder, thread: thread(l.id), kept: kept(l.holder), createdAt: l.created_at })),
+      held: h.map((l) => ({ id: l.id, body: l.body, status: l.status, hops: l.hops, thread: thread(l.id), kept: kept(l.author), createdAt: l.created_at })),
     });
   }));
 
