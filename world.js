@@ -8,7 +8,7 @@ import { blockedSet, bondSet, bondList, markActive } from './social.js';
 import { cleanText, containsBlocked, hasLink, clamp, rand, pick, hoursSince } from './util.js';
 
 export const MOODS = 8; // client maps 0..7 to colours
-const BOUND = 1000;     // world is [-BOUND, BOUND]^2
+const BOUND = 2000;    // world is [-BOUND, BOUND]^2
 const SCALE = 16;       // Int16 fixed-point for positions
 const TICK_MS = 200;
 const SNAPSHOT_EVERY = 25; // full position snapshot every 5 s (also resyncs lost volatile packets)
@@ -32,6 +32,20 @@ export function detectRedFlag(text) {
 
 const sid = () => crypto.randomBytes(6).toString('hex');
 const dist2 = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+
+export function wrapCoord(v, b = BOUND) {
+  const span = b * 2;
+  return ((((v + b) % span) + span) % span) - b;
+}
+
+export function torDist2(a, b, span = BOUND * 2) {
+  let dx = Math.abs(a.x - b.x);
+  if (dx > span / 2) dx = span - dx;
+  let dy = Math.abs(a.y - b.y);
+  if (dy > span / 2) dy = span - dy;
+  return dx * dx + dy * dy;
+}
+
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 
 export function getDistanceKm(lat1, lon1, lat2, lon2) {
@@ -154,7 +168,7 @@ export function createWorld(httpServer) {
   function enterGalaxy(c, slug) {
     const g = G(slug);
     c.socket.join(room(slug));
-    c.x = rand(-500, 500); c.y = rand(-500, 500); c.lastMove = Date.now();
+    c.x = rand(-BOUND * 0.5, BOUND * 0.5); c.y = rand(-BOUND * 0.5, BOUND * 0.5); c.lastMove = Date.now();
     addEntity(g, c);
     c.near = new Map();
     const roster = [];
@@ -191,12 +205,16 @@ export function createWorld(httpServer) {
       const a = grid.get(k);
       a ? a.push(e) : grid.set(k, [e]);
     }
+    const minCell = Math.floor(-BOUND / cell), maxCell = Math.floor(BOUND / cell);
+    const cellSpan = maxCell - minCell + 1;
+    const wrapCell = (idx) => ((((idx - minCell) % cellSpan) + cellSpan) % cellSpan) + minCell;
+
     for (const c of g.ents.values()) {
       if (c.echo) continue;
       const cx = Math.floor(c.x / cell), cy = Math.floor(c.y / cell);
       const now = new Map();
       for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
-        const arr = grid.get(key(cx + dx, cy + dy));
+        const arr = grid.get(key(wrapCell(cx + dx), wrapCell(cy + dy)));
         if (!arr) continue;
         for (const e of arr) {
           if (e === c) continue;
@@ -206,7 +224,7 @@ export function createWorld(httpServer) {
             const dist = getDistanceKm(c.lat, c.lon, e.lat, e.lon);
             if (dist == null || dist > 100) continue;
           }
-          const d = dist2(c, e);
+          const d = torDist2(c, e);
           if (d < R2 || (c.near.has(e.sid) && d < H2)) now.set(e.sid, e.tv);
         }
       }
@@ -418,10 +436,24 @@ export function createWorld(httpServer) {
       const now = Date.now();
       const dt = clamp(now - c.lastMove, 50, 1000) / 1000;
       c.lastMove = now;
-      let nx = clamp(d.x, -BOUND, BOUND), ny = clamp(d.y, -BOUND, BOUND);
+      let nx = wrapCoord(d.x, BOUND), ny = wrapCoord(d.y, BOUND);
+      const span = BOUND * 2;
+      let dx = nx - c.x;
+      if (dx > BOUND) dx -= span;
+      else if (dx < -BOUND) dx += span;
+
+      let dy = ny - c.y;
+      if (dy > BOUND) dy -= span;
+      else if (dy < -BOUND) dy += span;
+
       const maxd = getNumber('world.max_speed') * dt * 1.3 + 4;
-      const dx = nx - c.x, dy = ny - c.y, len = Math.hypot(dx, dy);
-      if (len > maxd) { nx = c.x + (dx / len) * maxd; ny = c.y + (dy / len) * maxd; }
+      const len = Math.hypot(dx, dy);
+      if (len > maxd) {
+        dx = (dx / len) * maxd;
+        dy = (dy / len) * maxd;
+        nx = wrapCoord(c.x + dx, BOUND);
+        ny = wrapCoord(c.y + dy, BOUND);
+      }
       if (nx === c.x && ny === c.y) return;
       c.x = nx; c.y = ny; c.dirty = true;
       const g = galaxies.get(c.galaxy); if (g) g.changed = true;
@@ -517,7 +549,7 @@ export function createWorld(httpServer) {
       const cands = [...g.ents.values()].filter((e) => !e.echo && e !== c && !c.blocked.has(e.profileId) && !e.blocked.has(c.profileId));
       const t = pick(cands);
       if (!t) return;
-      c.x = clamp(t.x + rand(-70, 70), -BOUND, BOUND); c.y = clamp(t.y + rand(-70, 70), -BOUND, BOUND);
+      c.x = wrapCoord(t.x + rand(-70, 70), BOUND); c.y = wrapCoord(t.y + rand(-70, 70), BOUND);
       c.dirty = true; g.changed = true; c.lastMove = Date.now();
       socket.emit('warp', { x: c.x, y: c.y });
     });
@@ -556,26 +588,41 @@ export function createWorld(httpServer) {
       ack(cb, { ok: true });
     });
 
-    // list view (low-end devices / no WebGL): a sample of nearby thoughts that can also be pulsed
+    // list view (low-end devices / no WebGL): thoughts strictly near the user
     on('feed', (d, cb) => {
       if (!bucket(c, 'feed', 1, 4_000)) return ack(cb, { error: 'slow_down' });
       const g = galaxies.get(c.galaxy);
+      if (!g) return ack(cb, { lights: [] });
       const isNeighbours = c.galaxy === 'neighbours';
-      const cands = [...g.ents.values()].filter((e) => {
-        if (e === c || !e.thought) return false;
-        if (!e.echo && (c.blocked.has(e.profileId) || e.blocked.has(c.profileId))) return false;
-        if (isNeighbours) {
-          if (c.lat == null || c.lon == null || e.lat == null || e.lon == null) return false;
-          const dist = getDistanceKm(c.lat, c.lon, e.lat, e.lon);
-          return dist != null && dist <= 100;
-        }
-        return true;
-      });
+      const span = BOUND * 2;
+      const revealR = getNumber('world.reveal_radius') || 160;
+      // Proximity threshold: only stars near the user in the sky (within 2.5x reveal radius, ~400px)
+      const maxProximity2 = (revealR * 2.5) ** 2;
+
+      const cands = [...g.ents.values()]
+        .filter((e) => {
+          if (e === c || !e.thought) return false;
+          if (!e.echo && (c.blocked.has(e.profileId) || e.blocked.has(c.profileId))) return false;
+          if (isNeighbours) {
+            if (c.lat == null || c.lon == null || e.lat == null || e.lon == null) return false;
+            const dist = getDistanceKm(c.lat, c.lon, e.lat, e.lon);
+            return dist != null && dist <= 100;
+          }
+          const d2 = torDist2(c, e, span);
+          return d2 <= maxProximity2;
+        })
+        .map((e) => {
+          const distKm = (isNeighbours && c.lat != null && e.lat != null) ? getDistanceKm(c.lat, c.lon, e.lat, e.lon) : null;
+          const d2 = isNeighbours ? (distKm ?? 999999) : torDist2(c, e, span);
+          return { e, d2, distKm };
+        });
+
+      cands.sort((a, b) => a.d2 - b.d2);
+
       const out = [];
-      while (cands.length && out.length < 24) {
-        const e = cands.splice(crypto.randomInt(cands.length), 1)[0];
+      for (let idx = 0; idx < Math.min(cands.length, 24); idx++) {
+        const { e, distKm } = cands[idx];
         c.near.set(e.sid, e.tv);
-        const distKm = (isNeighbours && c.lat != null && e.lat != null) ? getDistanceKm(c.lat, c.lon, e.lat, e.lon) : null;
         out.push({ i: e.idx, sid: e.sid, t: e.thought, m: e.mood, f: flagsOf(e), distKm, interests: e.interests || [], isIncognito: !!e.isIncognito });
       }
       ack(cb, { lights: out });
