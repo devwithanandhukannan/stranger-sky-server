@@ -28,7 +28,7 @@ export const SPEC = [
 
   { key: 'world.galaxies', label: 'Galaxies: slug|Name|#color separated by ;', group: 'Sky world', public: true, def: GALAXIES, validate: (v) => parseGalaxies(v).length >= 1 },
   { key: 'world.sky_theme', label: 'Sky theme: auto, midnight, dawn, dusk, onam, diwali, christmas', group: 'Sky world', public: true, def: 'auto', validate: (v) => ['auto', 'midnight', 'dawn', 'dusk', 'onam', 'diwali', 'christmas'].includes(v) },
-  { key: 'world.reveal_radius', label: 'How close lights must be to see thoughts', group: 'Sky world', public: true, def: '160', type: 'number' },
+  { key: 'world.reveal_radius', label: 'How close lights must be to see thoughts', group: 'Sky world', public: true, def: '220', type: 'number' },
   { key: 'world.max_speed', label: 'Max light speed (units per second)', group: 'Sky world', public: true, def: '220', type: 'number' },
   { key: 'world.thought_max', label: 'Max thought length', group: 'Sky world', public: true, def: '120', type: 'number' },
   { key: 'world.galaxy_cap', label: 'Max lights per galaxy', group: 'Sky world', def: '400', type: 'number' },

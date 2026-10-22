@@ -182,6 +182,7 @@ export function createWorld(httpServer) {
         }
       }
     }
+    computeNear(g);
   }
   function leaveGalaxy(c) {
     if (c.planet) endPlanet(c.planet, 'left');
@@ -480,6 +481,8 @@ export function createWorld(httpServer) {
       if (text && (hasLink(text) || containsBlocked(text, getList('moderation.blocked_words')))) return ack(cb, { error: 'not_allowed' });
       c.thought = text; c.mood = mood; c.tv++;
       broadcastFlag(c);
+      const g = galaxies.get(c.galaxy);
+      if (g) computeNear(g);
       ack(cb, { ok: true });
     });
 
