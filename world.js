@@ -159,7 +159,7 @@ export function createWorld(httpServer) {
     c.near = new Map();
     const roster = [];
     for (const e of g.ents.values()) if (e !== c) roster.push(pub(e));
-    c.socket.emit('galaxy:enter', { galaxy: slug, you: pub(c), roster, hide: hideFor(c, g), census: census() });
+    c.socket.emit('galaxy:enter', { galaxy: slug, you: { ...pub(c), t: c.thought }, roster, hide: hideFor(c, g), census: census() });
     c.socket.to(room(slug)).emit('roster:add', pub(c));
     for (const e of g.ents.values()) {
       if (!e.echo && e !== c) {
@@ -232,12 +232,6 @@ export function createWorld(httpServer) {
 
   // ---------- echoes: faint traces of earlier visitors + seed thoughts, so the sky never feels empty ----------
   function tendEchoes(g, snapshot) {
-    if (process.env.NODE_ENV !== 'test') {
-      for (const e of g.ents.values()) {
-        if (e.echo) removeEntity(e);
-      }
-      return;
-    }
     const real = realCount(g);
     const want = real === 0 ? 0 : real < 40 ? 14 : real < 150 ? 8 : 4;
     const ttl = getNumber('world.echo_hours') * 3_600_000;
@@ -436,7 +430,8 @@ export function createWorld(httpServer) {
         isIncognito: !!p.isIncognito,
         activeInterests: getActiveInterests(),
       });
-      const slug = pickGalaxy(validSlug(p.galaxy) ? p.galaxy : galaxyDefs()[0].slug);
+      const defaultSlug = galaxyDefs().find((g) => g.slug === 'night')?.slug || galaxyDefs()[0].slug;
+      const slug = pickGalaxy(p.galaxy && validSlug(p.galaxy) && p.galaxy !== 'neighbours' ? p.galaxy : defaultSlug);
       if (!slug) { socket.emit('full', {}); socket.disconnect(true); return; }
       enterGalaxy(c, slug);
       for (const id of c.bonds) { const o = online.get(id); if (o) emit(o, 'bond:presence', { id: p.id, online: true }); }
@@ -499,7 +494,28 @@ export function createWorld(httpServer) {
       }
       c.interests = clean;
       broadcastActiveInterests();
+      const g = galaxies.get(c.galaxy);
+      if (g) {
+        io.to(room(g.slug)).emit('roster:interests', { i: c.idx, sid: c.sid, interests: clean });
+      }
       ack(cb, { ok: true, interests: clean });
+    });
+
+    on('peek', (d, cb) => {
+      const g = galaxies.get(c.galaxy);
+      const target = g?.bySid.get(d?.sid);
+      if (!target || target === c) return ack(cb, { error: 'not_found' });
+      ack(cb, {
+        ok: true,
+        sid: target.sid,
+        i: target.idx,
+        t: target.thought || '',
+        m: target.mood,
+        f: flagsOf(target),
+        interests: target.interests || [],
+        isIncognito: !!target.isIncognito,
+        distKm: (g.slug === 'neighbours' && c.lat != null && target.lat != null) ? getDistanceKm(c.lat, c.lon, target.lat, target.lon) : null,
+      });
     });
 
     on('travel', (d, cb) => {
@@ -774,6 +790,13 @@ export function createWorld(httpServer) {
       }
     },
     notify(id, ev, payload) { const e = online.get(id); if (e) emit(e, ev, payload); },
+    broadcastLanternDrift(galaxy) {
+      for (const c of online.values()) {
+        if (!c.isIncognito && c.socket && (!galaxy || c.galaxy === galaxy || c.galaxy === 'night')) {
+          emit(c, 'lantern:drift', { available: true });
+        }
+      }
+    },
     // a REST-side block (e.g. from a bond list) must take effect in the live sky immediately
     refreshBlocks: async (id) => { const e = online.get(id); if (e) { e.blocked = await blockedSet(id); const g = galaxies.get(e.galaxy); if (g) { emit(e, 'hide', { sids: hideFor(e, g) }); g.changed = true; } } },
     onBlockRest(a, b) {

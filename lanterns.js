@@ -52,6 +52,7 @@ export function buildLanterns(rt) {
     const cap = getNumber('limits.lanterns_per_day');
     if (sent.length >= cap) return bad(res, 'daily_limit', 429);
     const row = must(await db.from('lanterns').insert({ author: req.me.id, body, galaxy: p.data.galaxy || req.me.galaxy }).select('id').single());
+    rt?.broadcastLanternDrift?.(p.data.galaxy || req.me.galaxy);
     res.json({ id: row.id, left: cap - sent.length - 1 });
   }));
 

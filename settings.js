@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { db, must } from './db.js';
 import { config } from './config.js';
 
-const GALAXIES = 'neighbours|Neighbours (Near Me)|#38ef7d;music|Music|#7aa2ff;cinema|Cinema|#ff8fb1;games|Games|#79e6b6;tech|Tech|#7fdcff;travel|Travel|#ffd27a;learn|Languages|#c4a0ff;night|Night thoughts|#9fb0ff;kerala|Kerala|#ffb07a';
+const GALAXIES = 'night|One Sky|#9fb0ff;neighbours|Neighbours (Near Me)|#38ef7d;music|Music|#7aa2ff;cinema|Cinema|#ff8fb1;games|Games|#79e6b6;tech|Tech|#7fdcff;travel|Travel|#ffd27a;learn|Languages|#c4a0ff;kerala|Kerala|#ffb07a';
 const SEEDS = "";
 const PROMPTS = 'What is a small thing that made you smile today?|If you could ask a stranger anything, what would it be?|Describe your day in three words.|What song is stuck in your head?|What is a place you miss?|What would you do with a free day?|Two truths and a lie: go!|What is something you are quietly proud of?|What did you want to be when you were small?|What is the best thing you ate this week?';
 
@@ -101,11 +101,10 @@ export function galaxyDefs() {
   if (gCache.raw !== raw) gCache = { raw, val: parseGalaxies(raw) };
   const base = gCache.val.length ? gCache.val : parseGalaxies(GALAXIES);
   const bySlug = new Map();
-  if (!base.some((g) => g.slug === 'neighbours')) {
+  for (const g of base) bySlug.set(g.slug, g);
+  if (!bySlug.has('neighbours')) {
     bySlug.set('neighbours', { slug: 'neighbours', name: 'Neighbours (Near Me)', color: '#0071e3' });
   }
-
-  for (const g of base) bySlug.set(g.slug, g);
   for (const g of dynamicGalaxies) if (!bySlug.has(g.slug)) bySlug.set(g.slug, g);
   return Array.from(bySlug.values());
 }
