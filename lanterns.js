@@ -89,6 +89,16 @@ export function buildLanterns(rt) {
     res.json({ ok: true });
   }));
 
+  // Delete a lantern created by me.
+  r.delete('/:id', limit, ah(async (req, res) => {
+    const lid = idSchema.safeParse(req.params.id);
+    if (!lid.success) return bad(res, 'invalid_input');
+    const l = await load(lid.data);
+    if (!l || l.author !== req.me.id || l.status === 'removed') return bad(res, 'not_found', 404);
+    must(await db.from('lanterns').update({ status: 'removed', holder: null }).eq('id', l.id).eq('author', req.me.id));
+    res.json({ ok: true });
+  }));
+
   async function party(req, res) {
     const lid = idSchema.safeParse(req.params.id);
     if (!lid.success) { bad(res, 'invalid_input'); return null; }
