@@ -634,10 +634,18 @@ export function createWorld(httpServer) {
     on('pulse', (d) => {
       const t = typeof d?.sid === 'string' ? galaxies.get(c.galaxy)?.bySid.get(d.sid) : null;
       if (!t || t === c) return;
-      if (!bucket(c, 'pulse', getNumber('limits.pulses_per_min'), 60_000)) return socket.emit('pulse:limit', {});
-      if (c.planet) return;
+      if (c.planet) {
+        const p2 = planets.get(c.planet);
+        if (p2 && (p2.a === t || p2.b === t) && !p2.ended) {
+          const distKm = (c.lat != null && t.lat != null) ? getDistanceKm(c.lat, c.lon, t.lat, t.lon) : null;
+          emit(c, 'planet:open', { pid: p2.id, sid: t.sid, m: t.mood, t: t.thought, known: p2.known, with: p2.known ? { id: t.profileId, name: t.name } : null, prompt: '', distKm });
+          return;
+        }
+        return;
+      }
       if (t.echo) return socket.emit('pulse:echo', { sid: t.sid });
       const replying = c.pulsedBy.has(t.sid) && Date.now() - c.pulsedBy.get(t.sid) < PULSE_WINDOW;
+      if (!replying && !bucket(c, 'pulse', getNumber('limits.pulses_per_min'), 60_000)) return socket.emit('pulse:limit', {});
       if (!replying && !c.near.has(t.sid)) return;
       if (c.blocked.has(t.profileId) || t.blocked.has(c.profileId)) return;
       if (t.planet) return socket.emit('pulse:busy', { sid: t.sid });

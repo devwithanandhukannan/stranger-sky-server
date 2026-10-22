@@ -40,7 +40,7 @@ export const SPEC = [
   { key: 'limits.max_message_length', label: 'Max planet message length', group: 'Limits', def: '400', type: 'number' },
   { key: 'limits.lanterns_per_day', label: 'Lanterns a person can release per day', group: 'Limits', def: '5', type: 'number' },
   { key: 'limits.lantern_max_length', label: 'Max lantern length', group: 'Limits', def: '200', type: 'number' },
-  { key: 'limits.pulses_per_min', label: 'Max pulses per minute', group: 'Limits', def: '8', type: 'number' },
+  { key: 'limits.pulses_per_min', label: 'Max pulses per minute', group: 'Limits', def: '20', type: 'number' },
   { key: 'moderation.blocked_words', label: 'Blocked words (comma separated)', group: 'Moderation', def: '' },
 ];
 
